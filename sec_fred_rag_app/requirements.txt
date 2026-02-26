@@ -1,0 +1,29 @@
+# Core 
+python-dotenv>=1.0.0
+requests>=2.31.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# SEC parsing
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+sec-edgar-downloader>=5.0.0
+
+# Embeddings + Vector DB
+chromadb>=0.4.0
+openai>=1.0.0
+tiktoken>=0.5.0
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.10
+
+# FRED
+fredapi>=0.5.0
+
+# Analytics
+vaderSentiment>=3.3.2
+scikit-learn>=1.3.0
+
+# Visualization + App
+streamlit>=1.30.0
+plotly>=5.18.0
