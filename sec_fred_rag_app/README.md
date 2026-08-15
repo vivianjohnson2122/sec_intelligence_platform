@@ -221,6 +221,6 @@ All tests run fully offline — no API keys are required.
 
 ---
 
-## Resume-Ready Project Description
+## Project Description
 
 Built a full-stack financial intelligence platform that ingests SEC 10-K/10-Q filings via the EDGAR REST API and 17 FRED macroeconomic series, stores 1,536-dimensional OpenAI embeddings in a persistent ChromaDB vector store, and exposes a LangChain GPT-4o-mini RAG chat interface with metadata-filtered retrieval scoped by ticker, section, and date. The analytics layer combines VADER sentiment scoring (augmented with a custom 40-term financial lexicon) with Pearson correlation analysis against the macro panel, quantifying how filing tone co-moves with VIX, credit spreads, and GDP growth. A four-tab Streamlit dashboard surfaces company ingestion, RAG chat, FRED visualisations with NBER recession shading, and sentiment heatmaps—all backed by a fully offline pytest suite testing the parsing, FRED feature engineering, and sentiment pipelines.
