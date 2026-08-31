@@ -304,25 +304,111 @@ def render_company_explorer() -> None:
         )
 
         if st.button("Load Section Text", key="load_section_btn"):
-            collection = embedder.collection
-            results = collection.query(
-                query_texts=[""],
-                n_results=50,
-                where={
-                    "$and": [
-                        {"accession_number": {"$eq": chosen_accession}},
-                        {"section": {"$eq": chosen_section}},
-                    ]
-                },
-                include=["documents", "metadatas"],
+            row = next(
+                (r for r in ticker_rows if r["accession_number"] == chosen_accession),
+                None,
             )
-            docs = results.get("documents", [[]])[0]
-            if docs:
-                full_text = "\n\n".join(docs)
-                with st.expander(f"Section: {chosen_section} ({len(docs)} chunks)", expanded=True):
-                    st.text_area("Raw Text", full_text, height=400, key="section_text_area")
+            section_text: Optional[str] = None
+            source_label = "EDGAR"
+            live_sections: Optional[dict[str, str]] = None
+
+            with st.spinner("Fetching and parsing filing from EDGAR…"):
+                try:
+                    from ingestion.edgar_client import EdgarClient
+                    from ingestion.filing_parser import FilingParser
+
+                    collection = embedder.collection
+                    meta_results = collection.get(
+                        where={"accession_number": chosen_accession},
+                        include=["metadatas"],
+                        limit=1,
+                    )
+                    metas = meta_results.get("metadatas") or []
+                    meta = metas[0] if metas else {}
+
+                    edgar = EdgarClient()
+                    parser = FilingParser()
+                    form_type = row.get("form_type") if row else meta.get("form_type", "10-K")
+                    ticker = row.get("ticker") if row else meta.get("ticker", "")
+
+                    filing: Optional[dict] = None
+                    if ticker:
+                        cik = edgar.get_cik(ticker)
+                        filings = edgar.get_filings(cik, form_type=form_type, limit=40)
+                        filing = next(
+                            (f for f in filings if f["accession_number"] == chosen_accession),
+                            None,
+                        )
+
+                    if filing is None and meta.get("cik"):
+                        acc_clean = chosen_accession.replace("-", "")
+                        cik = meta["cik"]
+                        filing = {
+                            "cik": cik,
+                            "accession_number": chosen_accession,
+                            "form_type": form_type,
+                            "primary_document": meta.get("primary_document", ""),
+                            "document_url": "",
+                            "index_url": (
+                                f"https://www.sec.gov/Archives/edgar/data/"
+                                f"{cik.lstrip('0')}/{acc_clean}/{chosen_accession}-index.htm"
+                            ),
+                        }
+
+                    if filing:
+                        html = edgar.get_filing_text(filing)
+                        if html and not edgar._is_submission_wrapper(html):
+                            live_sections = parser.parse(
+                                html,
+                                form_type=form_type,
+                                accession_number=chosen_accession,
+                            )
+                            section_text = live_sections.get(chosen_section)
+                except Exception as exc:
+                    logger.warning("Live section fetch failed: %s", exc)
+
+            # Only use ChromaDB when live EDGAR fetch did not succeed.
+            if not section_text and live_sections is None:
+                source_label = "ChromaDB (cached)"
+                collection = embedder.collection
+                results = collection.query(
+                    query_texts=[""],
+                    n_results=50,
+                    where={
+                        "$and": [
+                            {"accession_number": {"$eq": chosen_accession}},
+                            {"section": {"$eq": chosen_section}},
+                        ]
+                    },
+                    include=["documents"],
+                )
+                docs = results.get("documents", [[]])[0]
+                if docs:
+                    from ingestion.edgar_client import EdgarClient
+
+                    cached = "\n\n".join(docs)
+                    if not EdgarClient()._is_submission_wrapper(cached):
+                        section_text = cached
+
+            if section_text:
+                with st.expander(
+                    f"Section: {chosen_section} · source: {source_label}",
+                    expanded=True,
+                ):
+                    st.text_area("Section Text", section_text, height=400, key="section_text_area")
+            elif live_sections is not None:
+                available = ", ".join(sorted(live_sections.keys()))
+                st.warning(
+                    f"Section `{chosen_section}` is not in this filing's parsed sections. "
+                    f"Available sections: {available}. "
+                    "Pick one of those, or re-ingest the ticker from the sidebar to refresh "
+                    "cached section names."
+                )
             else:
-                st.info("No text found for that section/filing combination.")
+                st.info(
+                    "No text found for that section/filing combination. "
+                    "If you previously ingested before a fix, re-ingest the ticker from the sidebar."
+                )
 
 
 # ===========================================================================
