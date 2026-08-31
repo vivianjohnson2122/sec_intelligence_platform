@@ -127,6 +127,7 @@ class EdgarClient:
                         ),
                         "index_url": (
                             f"{EDGAR_ARCHIVE}/{cik_stripped}/{accession_clean}/"
+                            f"{accessions[i]}-index.htm"
                         ),
                     }
                 )
@@ -136,11 +137,73 @@ class EdgarClient:
         logger.info("[EDGAR] Found %d %s filings for CIK %s", len(results), form_type, cik)
         return results
 
-    def _resolve_primary_document(self, index_url: str, accession_number: str) -> Optional[str]:
+    def _build_document_url(self, filing: dict, filename: str) -> str:
+        """Build a full EDGAR archive URL for a document filename."""
+        cik = filing["cik"].lstrip("0")
+        acc_clean = filing["accession_number"].replace("-", "")
+        return f"{EDGAR_ARCHIVE}/{cik}/{acc_clean}/{filename}"
+
+    def _is_submission_wrapper(self, text: str) -> bool:
+        """True when the payload is the SEC full-submission wrapper, not the 10-K/10-Q HTML."""
+        sample = text.lstrip()[:4000]
+        return (
+            sample.startswith("<SEC-DOCUMENT>")
+            or sample.startswith("<SUBMISSION>")
+            or (
+                "<SEC-HEADER>" in sample
+                and "<DOCUMENT>" in sample
+                and "<FILENAME>" in sample
+                and "Document 1 - file:" in sample
+            )
+        )
+
+    def _extract_primary_filename(self, wrapper_text: str, form_type: str) -> Optional[str]:
+        """Parse the primary HTML filename out of a SEC submission wrapper."""
+        form_pattern = rf"<TYPE>\s*{re.escape(form_type)}\s*\n.*?<FILENAME>\s*([^\s<]+)"
+        match = re.search(form_pattern, wrapper_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+        for filename_match in re.finditer(
+            r"<FILENAME>\s*([^\s<]+\.htm[l]?)", wrapper_text, re.IGNORECASE
+        ):
+            name = filename_match.group(1).strip()
+            lower = name.lower()
+            if re.search(r"xex\d+|^ex[-\d]", lower):
+                continue
+            if re.match(r"r\d+\.htm", lower):
+                continue
+            if "-index.htm" in lower:
+                continue
+            return name
+        return None
+
+    def _is_non_primary_document(self, href: str) -> bool:
+        """Filter out exhibits, XBRL render pages, and filing index pages."""
+        lower = href.lower()
+        filename = lower.rsplit("/", 1)[-1]
+
+        if "-index.htm" in lower or "-index.html" in lower:
+            return True
+        if lower.endswith(".txt"):
+            return True
+        if re.search(r"xex\d+|^ex[-\d]", filename):
+            return True
+        if re.match(r"r\d+\.htm", filename):
+            return True
+        return False
+
+    def _resolve_primary_document(
+        self,
+        index_url: str,
+        accession_number: str,
+        primary_document: Optional[str] = None,
+        form_type: str = "10-K",
+    ) -> Optional[str]:
         """
         Fetch the filing index page and return the URL of the primary document.
 
-        Prefers .htm/.html files, avoids -index.htm files and .txt submission files.
+        Prefers the SEC-provided primary_document filename, then other .htm/.html files.
         Returns the full URL of the document to fetch, or None on failure.
         """
         try:
@@ -149,74 +212,118 @@ class EdgarClient:
             logger.warning("[EDGAR] Failed to fetch index %s: %s", index_url, exc)
             return None
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        if self._is_submission_wrapper(resp.text):
+            inner = self._extract_primary_filename(resp.text, form_type=form_type)
+            if inner:
+                return self._absolute_archive_url(index_url, inner)
+            return None
 
-        # EDGAR index pages have a table with columns: Seq, Description, Document, Type, Size
+        soup = BeautifulSoup(resp.text, "html.parser")
         candidates: list[tuple[int, str]] = []  # (priority, href)
 
         for link in soup.find_all("a", href=True):
             href: str = link["href"]
             lower = href.lower()
 
-            # Skip index pages and submission text files
-            if "-index.htm" in lower or lower.endswith(".txt"):
+            if self._is_non_primary_document(href):
                 continue
-
-            # Only consider htm/html documents
             if not (lower.endswith(".htm") or lower.endswith(".html")):
                 continue
 
-            # Prefer files that look like the primary 10-K/10-Q document
-            # (contain the accession number without dashes, or named like r*.htm)
-            acc_clean = accession_number.replace("-", "")
-            if acc_clean in href and not lower.endswith("-index.htm"):
-                # Highest priority: direct accession-number document
+            if primary_document and primary_document.lower() in lower:
                 candidates.append((0, href))
-            elif re.search(r"\d{18}", href):
-                candidates.append((1, href))
             else:
-                candidates.append((2, href))
+                acc_clean = accession_number.replace("-", "")
+                if acc_clean in href:
+                    candidates.append((1, href))
+                else:
+                    candidates.append((2, href))
 
         if not candidates:
             logger.warning(
-                "[EDGAR] No suitable document found in index %s; falling back to direct URL",
-                index_url,
+                "[EDGAR] No suitable document found in index %s", index_url
             )
             return None
 
-        # Sort by priority (lowest = best), take first
         candidates.sort(key=lambda x: x[0])
-        best_href = candidates[0][1]
+        return self._absolute_archive_url(index_url, candidates[0][1])
 
-        # href may be relative (e.g. /Archives/edgar/data/...)
-        if best_href.startswith("http"):
-            return best_href
-        return f"{EDGAR_WWW}{best_href}"
+    def _absolute_archive_url(self, index_url: str, href: str) -> str:
+        """Convert an EDGAR index href into a full https://www.sec.gov URL."""
+        if href.startswith("http"):
+            return href
+        if href.startswith("/"):
+            return f"{EDGAR_WWW}{href}"
+        base = index_url.rsplit("/", 1)[0]
+        return f"{base}/{href.lstrip('/')}"
+
+    def _fetch_document_text(self, url: str, timeout: int = 60) -> Optional[str]:
+        try:
+            resp = self._get_raw(url, timeout=timeout)
+            return resp.text
+        except requests.RequestException as exc:
+            logger.warning("[EDGAR] Failed to fetch %s: %s", url, exc)
+            return None
 
     def get_filing_text(self, filing: dict) -> Optional[str]:
         """
         Download the raw HTML of a filing's primary document.
 
-        First fetches the index page to resolve the correct document URL,
-        avoiding index pages and submission wrapper files.
+        Prefers the SEC submissions API primary_document URL, validates the payload,
+        and falls back to index-page resolution when needed.
         Returns the raw HTML string, or None on failure.
         """
         accession = filing.get("accession_number", "")
+        form_type = filing.get("form_type", "10-K")
+        primary_doc = filing.get("primary_document", "")
+        document_url = filing.get("document_url", "")
         index_url = filing.get("index_url", "")
 
-        # Attempt to resolve the real document from the index
-        resolved_url = self._resolve_primary_document(index_url, accession)
+        if not index_url.endswith("-index.htm") and accession:
+            cik = filing.get("cik", "").lstrip("0")
+            acc_clean = accession.replace("-", "")
+            index_url = f"{EDGAR_ARCHIVE}/{cik}/{acc_clean}/{accession}-index.htm"
 
-        # Fall back to the pre-computed document_url if resolution fails
-        url = resolved_url or filing["document_url"]
-        logger.info("[EDGAR] Fetching document: %s", url)
+        urls_to_try: list[str] = []
+        if document_url:
+            urls_to_try.append(document_url)
+        if primary_doc:
+            built = self._build_document_url(filing, primary_doc)
+            if built not in urls_to_try:
+                urls_to_try.append(built)
 
-        try:
-            resp = self._get_raw(url, timeout=60)
-            return resp.text
-        except requests.RequestException as exc:
-            logger.error("[EDGAR] Failed to fetch %s: %s", url, exc)
-            return None
+        resolved_url = self._resolve_primary_document(
+            index_url, accession, primary_doc, form_type=form_type
+        )
+        if resolved_url and resolved_url not in urls_to_try:
+            urls_to_try.append(resolved_url)
+
+        for url in urls_to_try:
+            text = self._fetch_document_text(url)
+            if not text:
+                continue
+
+            if self._is_submission_wrapper(text):
+                inner_name = self._extract_primary_filename(text, form_type)
+                if not inner_name:
+                    continue
+                inner_url = self._build_document_url(filing, inner_name)
+                logger.info(
+                    "[EDGAR] Submission wrapper at %s; fetching primary doc %s",
+                    url,
+                    inner_name,
+                )
+                inner_text = self._fetch_document_text(inner_url)
+                if inner_text and not self._is_submission_wrapper(inner_text):
+                    return inner_text
+                continue
+
+            if len(text.strip()) > 500:
+                logger.info("[EDGAR] Fetched primary document: %s", url)
+                return text
+
+        logger.error("[EDGAR] Could not fetch primary document for %s", accession)
+        return None
 
     def get_filings_for_tickers(
         self,
