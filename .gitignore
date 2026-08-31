@@ -1,2 +1,9 @@
 .env
 **/.env
+
+# Python
+**/__pycache__/
+*.py[cod]
+
+# Local data stores (regenerate via ingestion)
+sec_fred_rag_app/data/chroma/

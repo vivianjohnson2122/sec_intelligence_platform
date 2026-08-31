@@ -37,6 +37,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+def _inject_styles() -> None:
+    css_path = Path(__file__).parent / "assets" / "style.css"
+    if css_path.exists():
+        st.markdown(f"<style>{css_path.read_text()}</style>", unsafe_allow_html=True)
+
+
+def _page_guide(title: str, description: str, steps: list[str]) -> None:
+    steps_html = "".join(f"<li>{step}</li>" for step in steps)
+    st.markdown(
+        f"""
+        <div class="page-guide">
+            <div class="page-guide-title">{title}</div>
+            <p class="page-guide-desc">{description}</p>
+            <ol class="page-guide-steps">{steps_html}</ol>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_styles()
+
 # ---------------------------------------------------------------------------
 # NBER recession periods (start, end) for grey shading on charts
 # ---------------------------------------------------------------------------
@@ -212,6 +235,18 @@ _COMMON_TICKERS = [
 def render_company_explorer() -> None:
     """Render the Company Explorer tab."""
     st.header("Company Explorer")
+    _page_guide(
+        "How to use this page",
+        "Review what’s in your database and read individual filing sections "
+        "pulled live from EDGAR.",
+        [
+            "Ingest tickers from the sidebar (Step 1) if you haven’t already.",
+            "Scan the filings table for dates, form types, and parsed sections.",
+            "Choose a section and filing, then click <strong>Load Section Text</strong>.",
+            "Prefer sections like <strong>business</strong> or <strong>mda</strong> — "
+            "re-ingest if you only see generic names like <strong>section_1</strong>.",
+        ],
+    )
 
     tickers_to_ingest: list[str] = st.session_state.get("_tickers_to_ingest", [])
     form_type: str = st.session_state.get("_form_type", "10-K")
@@ -427,6 +462,17 @@ _STARTER_QUESTIONS: list[str] = [
 def render_rag_chat() -> None:
     """Render the RAG Chat tab."""
     st.header("RAG Chat — SEC Filings Q&A")
+    _page_guide(
+        "How to use this page",
+        "Ask natural-language questions about ingested SEC filings. "
+        "Answers are grounded in retrieved chunks with source citations.",
+        [
+            "Load at least one company’s filings from the sidebar first.",
+            "Optionally narrow by ticker, section, or date range in <strong>Filters</strong>.",
+            "Type a question below or tap a suggested starter prompt.",
+            "Expand <strong>Sources</strong> on any answer to see the exact filing excerpts used.",
+        ],
+    )
 
     chain = get_rag_chain()
     if chain is None:
@@ -560,6 +606,17 @@ except Exception:
 def render_macro_dashboard() -> None:
     """Render the Macro Dashboard tab."""
     st.header("Macro Dashboard — FRED Economic Data")
+    _page_guide(
+        "How to use this page",
+        "Explore 17 FRED macro indicators grouped by theme, with NBER recession "
+        "periods shaded on every chart.",
+        [
+            "Fetch or refresh macro data from the sidebar (Step 2) if the page is empty.",
+            "Pick a <strong>Category</strong> (rates, inflation, labor, etc.) and adjust the date range.",
+            "Use the chart range slider to zoom into a specific period.",
+            "Check <strong>Summary Statistics</strong> below for current levels and recent changes.",
+        ],
+    )
 
     macro_df = None
     macro_path = Path("./data/fred/macro_panel.parquet")
@@ -677,12 +734,32 @@ def render_macro_dashboard() -> None:
 def render_sidebar() -> None:
     """Render a single, step-by-step sidebar shared across all tabs."""
     with st.sidebar:
-        st.title("Getting Started")
-        st.caption("Follow these steps to set up and use the platform.")
+        st.markdown(
+            """
+            <div class="sidebar-brand">
+                <p class="sidebar-brand-title">Setup Guide</p>
+                <p class="sidebar-brand-desc">
+                    Complete these steps once, then explore any tab above.
+                    Ingestion runs in the background and may take a few minutes.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        # ── Step 1 ──────────────────────────────────────────────────
-        st.markdown("### Step 1 — Load Company Filings")
-        st.caption("Pick companies and pull their SEC filings into the database.")
+        st.markdown(
+            """
+            <div class="sidebar-step">
+                <div class="sidebar-step-num">1</div>
+                <p class="sidebar-step-title">Load company filings</p>
+                <p class="sidebar-step-desc">
+                    Select tickers and choose 10-K or 10-Q. Each filing is parsed
+                    into sections, embedded, and stored for search.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         cb_cols = st.columns(2)
         checked_tickers: list[str] = []
@@ -727,9 +804,19 @@ def render_sidebar() -> None:
 
         st.divider()
 
-        # ── Step 2 ──────────────────────────────────────────────────
-        st.markdown("### Step 2 — Load Macro Data")
-        st.caption("Fetch 17 FRED economic series for the Macro Dashboard.")
+        st.markdown(
+            """
+            <div class="sidebar-step">
+                <div class="sidebar-step-num">2</div>
+                <p class="sidebar-step-title">Load macro data</p>
+                <p class="sidebar-step-desc">
+                    Pulls 17 FRED series (rates, inflation, labor, credit, sentiment)
+                    into the Macro Dashboard. Safe to refresh anytime.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         macro_path = Path("./data/fred/macro_panel.parquet")
         if macro_path.exists():
@@ -744,18 +831,35 @@ def render_sidebar() -> None:
 
         st.divider()
 
-        # ── Step 3 ──────────────────────────────────────────────────
-        st.markdown("### Step 3 — Ask Questions")
-        st.caption(
-            "Once filings are loaded, open the **RAG Chat** tab and ask anything "
-            "about the companies — earnings, risks, strategy, and more."
+        st.markdown(
+            """
+            <div class="sidebar-step">
+                <div class="sidebar-step-num">3</div>
+                <p class="sidebar-step-title">Explore &amp; ask questions</p>
+                <p class="sidebar-step-desc">
+                    Use <strong>RAG Chat</strong> for Q&amp;A, <strong>Company Explorer</strong>
+                    to browse sections, and <strong>Macro Dashboard</strong> for economic context.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
 
 def main() -> None:
     """Entry point: renders the three-tab layout."""
-    st.title("SEC + FRED RAG Platform")
-    st.caption("Ingest SEC filings · Query with RAG · Explore macro data")
+    st.markdown(
+        """
+        <div class="app-hero">
+            <p class="app-hero-title">SEC + FRED <span>RAG Platform</span></p>
+            <p class="app-hero-tagline">
+                Ingest SEC filings, query them with retrieval-augmented generation,
+                and overlay macroeconomic context from FRED — all in one workspace.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     render_sidebar()
 
